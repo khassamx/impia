@@ -5,7 +5,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "echo '✅ Instalación de KekoAI completada. Ahora, configura el archivo .env y ejecuta npm start.'"
   },
   "keywords": ["whatsapp", "baileys", "openai", "bot", "ai"],
   "author": "KekoOfficial",
