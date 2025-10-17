@@ -7,33 +7,47 @@ import OpenAI from 'openai'
 
 dotenv.config()
 
+// ----------------------------------------------------
+// 1. VERIFICACIÓN CRÍTICA DE REQUISITOS (Refuerzo de Instalación)
+// ----------------------------------------------------
+
 const OPENAI_KEY = process.env.OPENAI_API_KEY
-if (!OPENAI_KEY) {
-  console.error('Falta OPENAI_API_KEY en .env — copiate .env.example y pon tu clave')
+if (!OPENAI_KEY || OPENAI_KEY === 'sk-xxxxxx') {
+  console.error('\n🛑 ERROR CRÍTICO: Falta OPENAI_API_KEY en .env o aún tiene el valor por defecto.')
+  console.error('Por favor, copia .env.example, renómbralo a .env y pon tu clave de OpenAI real.')
   process.exit(1)
 }
 
 const openai = new OpenAI({ apiKey: OPENAI_KEY })
 
-// 1. NUEVA ESTRUCTURA DE MEMORIA GLOBAL
-// Almacena el historial de conversación por número de WhatsApp (JID)
+// ----------------------------------------------------
+// 2. CONFIGURACIÓN INICIAL Y CARGA DE PERSONALIDAD
+// ----------------------------------------------------
+
+// Memoria Global (se pierde al reiniciar, pero mantiene la conversación viva)
 const CHAT_HISTORY = {} 
 
-// Cargar personalidad
-let persona = {
-  nombre: 'KekoAI',
-  edad: 22,
-  origen: 'Paraguay',
-  caracter: 'amigable, optimista, empático y divertido',
-  habla_como: 'una persona joven, cercana y positiva. Usa emojis, expresiones cotidianas y siempre busca animar a quien habla con él.'
-}
+let persona = {} // Inicializamos persona vacío
 
 try {
+  // Intentar cargar persona.json (verificación de archivo)
   const raw = fs.readFileSync('./persona.json', 'utf8')
   persona = JSON.parse(raw)
+  console.log(`✅ Personalidad cargada: ${persona.nombre} (${persona.origen}).`)
 } catch (e) {
-  console.warn('No se encontró persona.json — usando personalidad por defecto')
+  console.error('\n⚠️ ADVERTENCIA: No se encontró o el formato de persona.json es inválido. Usando personalidad por defecto.')
+  persona = {
+    nombre: 'KekoAI',
+    edad: 22,
+    origen: 'Paraguay',
+    caracter: 'amigable, optimista, empático y divertido',
+    habla_como: 'una persona joven, cercana y positiva. Usa emojis, expresiones cotidianas y siempre busca animar a quien habla con él.'
+  }
 }
+
+// ----------------------------------------------------
+// 3. LÓGICA PRINCIPAL DEL BOT
+// ----------------------------------------------------
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(process.env.SESSION_FOLDER || './auth')
@@ -43,6 +57,7 @@ async function startBot() {
     printQRInTerminal: false
   })
 
+  // ... (conexión.update - sin cambios mayores)
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update
     if (qr) {
@@ -58,86 +73,75 @@ async function startBot() {
 
     if (connection === 'open') console.log('✅ Conectado a WhatsApp!')
   })
+  // ... (fin conexión.update)
 
   sock.ev.on('messages.upsert', async (m) => {
     try {
       const message = m.messages[0]
       if (!message || message.key?.fromMe) return
 
-      // Obtener texto y JID
       const text = message.message?.conversation || message.message?.extendedTextMessage?.text
       const from = message.key.remoteJid
-      if (!text) return // Ignora mensajes sin texto (como audios, imágenes, etc. — se podría agregar lógica de Whisper aquí)
+      if (!text) return 
 
-      console.log(`📩 Mensaje de ${from}: ${text}`)
+      console.log(`\n📩 Mensaje de ${from}: ${text}`)
       
-      // 2. GESTIÓN DEL HISTORIAL Y DEFINICIÓN DEL PROMPT
-      
-      // Si el usuario no tiene historial, inicializarlo con el systemPrompt
+      // 1. GESTIÓN DEL HISTORIAL Y DEFINICIÓN DEL PROMPT
       if (!CHAT_HISTORY[from]) {
           const systemPrompt = `Eres ${persona.nombre}, una persona ${persona.caracter}. Hablas como: ${persona.habla_como}. Responde de forma amigable y cercana. No digas que eres un bot. Tu conversación es sobre un tema continuo, así que usa el contexto que te proporciono. Manten la conversación animada.`
           CHAT_HISTORY[from] = [{ role: 'system', content: systemPrompt }]
       }
-  
-      // Añadir el mensaje del usuario al historial
       CHAT_HISTORY[from].push({ role: 'user', content: text })
   
-      // Limitar el historial para no gastar demasiados tokens (ej. solo las últimas 10 interacciones)
-      // El System Prompt (índice 0) debe ir siempre primero.
       const conversation = [
-          CHAT_HISTORY[from][0], // System Prompt
-          ...CHAT_HISTORY[from].slice(-10) // Últimos 10 mensajes
+          CHAT_HISTORY[from][0], 
+          ...CHAT_HISTORY[from].slice(-10) 
       ]
 
-
-      // 3. LLAMADA A OPENAI con el historial completo
+      // 2. LLAMADA A OPENAI
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        messages: conversation, // Usamos el array con el historial
+        messages: conversation, 
         max_tokens: 400
       })
 
       const reply = completion.choices?.[0]?.message?.content || 'Perdón, tuve un problemita y no pude pensar bien. Intentá de nuevo 😊'
 
-      // 4. GUARDAR LA RESPUESTA DEL BOT EN EL HISTORIAL
+      // 3. GUARDAR RESPUESTA
       CHAT_HISTORY[from].push({ role: 'assistant', content: reply }) 
 
 
-      // 5. RESPUESTA DE VOZ (TTS - Text-to-Speech)
+      // 4. RESPUESTA DE VOZ (TTS - Text-to-Speech)
       const audioFilePath = `./temp_audio_${from}.mp3`;
       
-      console.log(`🎙️ Generando respuesta de voz: ${reply}`)
+      console.log(`🎙️ Generando respuesta de voz...`)
 
-      // Llamada a la API de TTS de OpenAI
       const ttsResponse = await openai.audio.speech.create({
           model: "tts-1",
-          voice: "onyx",  // Puedes cambiar a 'alloy', 'shimmer', etc.
-          input: reply,   // El texto generado por KekoAI
+          voice: "onyx", 
+          input: reply,   
       });
 
-      // Guardar el archivo de audio en el disco temporalmente
       const buffer = Buffer.from(await ttsResponse.arrayBuffer());
       await fs.promises.writeFile(audioFilePath, buffer);
       
-      // Enviar el archivo de audio a WhatsApp como una nota de voz (PTT: Push To Talk)
       await sock.sendMessage(
           from, 
           { 
               audio: { url: audioFilePath }, 
-              mimetype: 'audio/mp4', // Formato estándar para WhatsApp
-              ptt: true // Esto lo envía como una nota de voz
+              mimetype: 'audio/mp4', 
+              ptt: true 
           }
       );
 
-      // Limpiar el archivo temporal
       await fs.promises.unlink(audioFilePath);
       
       console.log(`✅ Respondido a ${from} con Audio`)
     } catch (err) {
-      console.error('Error procesando mensaje:', err)
-      // En caso de error, enviar un mensaje de texto para notificar al usuario (fallback)
+      console.error('\n🚨 ERROR procesando mensaje:', err.message)
+      // Mensaje de fallback para el usuario
       const from = m.messages[0].key.remoteJid
-      await sock.sendMessage(from, { text: 'Disculpa, tuve un error al procesar tu solicitud o al generar el audio. ¿Podrías intentar de nuevo?' })
+      await sock.sendMessage(from, { text: '¡Ups! Algo falló en mi cerebro de IA. Verifica tu API Key o intenta más tarde. 🤕' })
     }
   })
 
